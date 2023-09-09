@@ -1,2 +1,2 @@
 # bails-wallet
-Auditable Implementation for creating &amp; importing [Codex32](https://github.com/BlockstreamResearch/codex32) backups to Bitcoin Core
+Auditable python implementation for creating and importing [codex32](https://github.com/BlockstreamResearch/codex32) seed backups to Bitcoin Core.

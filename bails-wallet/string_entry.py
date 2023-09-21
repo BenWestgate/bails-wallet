@@ -153,12 +153,30 @@ class Codex32EntryDialog:
                                   timeout=15)
             if scan.returncode == 0:
                 output = scan.stdout
+                pos = self.prefill.rfind("1")
+                hrp = self.prefill[:pos]
+                if len(self.prefill) > pos:
+                    k = self.prefill[pos + 1]
+                    ident = self.prefix[pos + 2:pos + 6]
                 if len(output) == 17:
-                    self.entry.set_text('ms1?????'+codex32.convertbits(output, 8, 5))
-                elif len(output):
-                    scanned_text = str(output, 'utf')
-                    self.entry.set_text(scanned_text)  # Update the entry
+                    data = codex32.convertbits(output, 8, 5)
+                    share_index = codex32.CHARSET[data[0]]
+                    if len(self.prefill) > pos:
+                        codex32_str = codex32.ms32_encode(hrp, [
+                            codex32.CHARSET.find(x.lower()) for x in
+                            k + ident + share_index] + data[-1])
+                    else:
+                        k = '3' if data[-1] else '2'
+                        ident = '????'
+                        codex32_str = hrp + "1" + k + ident + "".join([codex32.CHARSET[d] for d in data[-1]]) + '?' * 13
+                    self.entry.set_text(codex32_str)
                     dialog.response(Gtk.ResponseType.OK)  # press OK button
+                elif len(output) > 46:
+                    scanned_text = str(output, 'utf')
+                    if codex32.decode(hrp, scanned_text) != (None, None, None, None):
+                        if ident == codex32.decode(hrp, scanned_text):
+                            self.entry.set_text(scanned_text)  # Update the entry
+                            dialog.response(Gtk.ResponseType.OK)  # press OK button
 
         # Connect the signals
         self.entry.connect("key-release-event", on_key_release)

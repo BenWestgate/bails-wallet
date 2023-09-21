@@ -1,18 +1,24 @@
 import gi
+import qrcode
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, Pango
 import codex32
 import secrets
 
+
 class Codex32EntryDialog:
-    def __init__(self, title="Enter a codex32 secret or share",
-                 text='Type your codex32 string:', prefill='MS1', indexes=[]):
+    def __init__(self, title="Enter a Codex32 secret or share",
+                 text='Type your Codex32 string:', prefill='MS1', indexes=[]):
         self.valid_checksum = True  # Initialize as True
         self.title = title
         self.text = text
         self.prefill = prefill.upper()
         self.indexes = indexes
+        self.entry = Gtk.Entry()
+        self.entry.set_activates_default(True)
+        self.entry.set_text(self.prefill.upper())  # Convert to uppercase
+        self.entry.set_position(len(self.prefill) + 1)
 
     def create_dialog(self):
         dialog = Gtk.Dialog(
@@ -23,19 +29,17 @@ class Codex32EntryDialog:
 
         label = Gtk.Label()
         label.set_text(self.text)
-        entry = Gtk.Entry()
-        entry.set_activates_default(True)
-        entry.set_text(self.prefill.upper())  # Convert to uppercase
-        entry.set_position(len(self.prefill) + 1)
+
+        # Set the width of the entry box in terms of character width
+        self.entry.set_width_chars(60)  # Adjust the number as needed
 
         # Create a Pango font description for monospace font
         font_desc = Pango.FontDescription()
         font_desc.set_family("Monospace")
-        font_desc.set_size(
-            Pango.units_from_double(12))  # You can adjust the font size as needed
+        font_desc.set_size(Pango.units_from_double(12))
 
         # Set the font for the entry
-        entry.modify_font(font_desc)
+        self.entry.modify_font(font_desc)
 
         # Define custom colors
         red_color = Gdk.RGBA()
@@ -56,11 +60,11 @@ class Codex32EntryDialog:
                 # Perform substitutions of non-bech32 characters by
                 # visual similarity or qwerty keyboard proximity.
                 elif char == "B":
-                    sanitized_text += secrets.choice(["8","G","N","?"])
+                    sanitized_text += secrets.choice(["8", "G", "N", "?"])
                 elif char == "I":
-                    sanitized_text += secrets.choice(["L","U","?"])
+                    sanitized_text += secrets.choice(["L", "U", "?"])
                 elif char == "O":
-                    sanitized_text += secrets.choice(["0","L","P","?"])
+                    sanitized_text += secrets.choice(["0", "L", "P", "?"])
                 elif char == "1":
                     sanitized_text += secrets.choice(["L", "2", "Q", "?"])
                 elif char == "-":
@@ -90,17 +94,17 @@ class Codex32EntryDialog:
             if entry.get_position() <= len(self.prefill):
                 entry.set_position(len(self.prefill))
 
-            string = sanitized_text.replace(" ", "")
-            if len(string) >= 48:
-                if codex32.decode('ms', string) == (None, None, None, None):
-                    # TODO: add a message explaining invalid checksum.
+            codex32_str = sanitized_text.replace(" ", "")
+            if len(codex32_str) >= 48:
+                if codex32.decode('ms', codex32_str) == (None, None, None, None):
+                    # TODO: add a message explaining an invalid checksum.
                     entry.override_color(Gtk.StateFlags.NORMAL, red_color)
                     self.valid_checksum = False
                 else:
                     entry.override_color(Gtk.StateFlags.NORMAL, green_color)
                     self.valid_checksum = True
             else:
-                if self.valid_checksum or len(string) == len(self.prefill):
+                if self.valid_checksum or len(codex32_str) == len(self.prefill):
                     entry.override_color(Gtk.StateFlags.NORMAL, None)
 
         def on_key_release(entry, event):
@@ -111,7 +115,7 @@ class Codex32EntryDialog:
             # Get the current text from the entry and convert it to uppercase
             orig_text = entry.get_text()
 
-            # Count existing spaces before cursor
+            # Count existing spaces before the cursor
             spaces = orig_text[:cursor_position].count(" ")
             cursor_position -= spaces
 
@@ -135,29 +139,50 @@ class Codex32EntryDialog:
                 # Set the modified text back to the entry
                 entry.set_text(spaced_text)
                 # Set the cursor position back to where it was
-                if orig_text[original_pos - 1] == spaced_text[cursor_position - 1]:
+                if orig_text[original_pos - 1] == spaced_text[
+                    cursor_position - 1]:
                     entry.set_position(cursor_position)
                 else:
                     entry.set_position(original_pos)
 
+        def on_scan_button_clicked(button):
+            # Add your QR code scanning logic here
+            import subprocess
+            scan = subprocess.run(['zbarcam', '-1', '--raw', '-Sdisable',
+                                   '-Sqrcode.enable'], capture_output=True,
+                                  timeout=15)
+            if scan.returncode == 0:
+                output = scan.stdout
+                if len(output) == 17:
+                    self.entry.set_text('ms1?????'+codex32.convertbits(output, 8, 5))
+                elif len(output):
+                    scanned_text = str(output, 'utf')
+                    self.entry.set_text(scanned_text)  # Update the entry
+                    dialog.response(Gtk.ResponseType.OK)  # press OK button
+
         # Connect the signals
-        entry.connect("key-release-event", on_key_release)
-        entry.connect("changed", on_entry_changed)
+        self.entry.connect("key-release-event", on_key_release)
+        self.entry.connect("changed", on_entry_changed)
+
+        scan_button = Gtk.Button.new_with_label("Scan QR Code")
+        scan_button.connect("clicked", on_scan_button_clicked)
 
         box = dialog.get_content_area()
         box.add(label)
-        box.add(entry)
-
+        box.add(self.entry)
+        box.add(scan_button)
         dialog.show_all()
 
         response = dialog.run()
         if response == Gtk.ResponseType.OK:
-            string = entry.get_text()
+            string = self.entry.get_text()
             if not string:
                 dialog.destroy()
                 return None
             dialog.destroy()
             return string
+
+
 
 if __name__ == "__main__":
     dialog = Codex32EntryDialog()

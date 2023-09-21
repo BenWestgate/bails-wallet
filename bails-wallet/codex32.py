@@ -7,8 +7,8 @@ import hmac
 
 # ChaCha20 used for better keystream option for shuffle
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
-from electrum.bip32 import BIP32Node
-from electrum.crypto import hash_160
+#from electrum.bip32 import BIP32Node
+#from electrum.crypto import hash_160
 
 CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 MS32_CONST = 0x10CE0795C2FD1E62A

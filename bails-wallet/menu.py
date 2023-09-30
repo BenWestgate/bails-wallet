@@ -56,6 +56,9 @@ def main():
     if response == Gtk.ResponseType.OK:
         selected_item = dialog.selected_item  # Get the selected item
         print(selected_item)
+        if selected_item == 'Recover seed with codex32 backup':
+            # TODO: call the string_entry.py class
+
     elif response == Gtk.ResponseType.CANCEL:
         exit(1)
 

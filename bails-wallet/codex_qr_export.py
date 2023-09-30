@@ -1,0 +1,13 @@
+import codex32
+
+codex32.encode_compact_qr('ms10testsxxxxxxxxxxxxxxxxxxxxxxxxxx4nzvca9cmczlw')
+codex32.encode_compact_qr('MS12NAMEA320ZYXWVUTSRQPNMLKJHGFEDCAXRPP870HKKQRM')
+codex32.encode_compact_qr('MS12NAMECACDEFGHJKLMNPQRSTUVWXYZ023FTR2GDZMPY6PN')
+codex32.encode_compact_qr('MS12NAMEDLL4F8JLH4E5VDVULDLFXU2JHDNLSM97XVENRXEG')
+codex32.encode_compact_qr('MS12NAMES6XQGUZTTXKEQNJSJZV4JV3NZ5K3KWGSPHUH6EVW')
+codex32.encode_compact_qr('ms13cashsllhdmn9m42vcsamx24zrxgs3qqjzqud4m0d6nln')
+codex32.encode_compact_qr('ms13casha320zyxwvutsrqpnmlkjhgfedca2a8d0zehn8a0t')
+codex32.encode_compact_qr('ms13cashcacdefghjklmnpqrstuvwxyz023949xq35my48dr')
+codex32.encode_compact_qr('ms13cashd0wsedstcdcts64cd7wvy4m90lm28w4ffupqs7rm')
+codex32.encode_compact_qr('ms13casheekgpemxzshcrmqhaydlp6yhms3ws7320xyxsar9')
+codex32.encode_compact_qr('ms13cashf8jh6sdrkpyrsp5ut94pj8ktehhw2hfvyrj48704')

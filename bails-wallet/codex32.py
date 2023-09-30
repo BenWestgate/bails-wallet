@@ -18,6 +18,8 @@ bech32_inv = [
     22, 18, 17, 23, 2, 25, 16, 19, 3, 21, 14, 30, 13, 7, 27, 15,
 ]
 
+BASE45_CHARSET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:"
+
 
 def ms32_polymod(values):
     GEN = [
@@ -220,7 +222,7 @@ def decode(hrp, codex_str):
              If decoding fails, (None, None, None, None).
     """
     hrpgot, k, ident, share_index, data = ms32_decode(codex_str)
-    if hrpgot != hrp:
+    if hrpgot != hrp.lower():
         return None, None, None, None
     decoded = convertbits(data[6:], 5, 8, False)
     if decoded is None or len(decoded) < 16 or len(decoded) > 64:
@@ -233,20 +235,18 @@ def ecc_padding(data):
     Calculate and return a byte with concatenated parity bits.
 
     :param data: Bytes of seed_len, hrp, k, ident, index and payload.
-    :return: Byte with concatenated parity bits.
+    :return: Byte with concatenated parity in most significant bits.
     """
     # Count mod 2 the number of set (1) bits in the byte data
-    parity_bit = sum(bin(byte)[2:].count("1") for byte in data) % 2
+    parity = bin(int.from_bytes(data)).count('1') % 2 << 7
     # Count mod 2 the number of set (1) even bits in the byte data
-    even_parity_bit = sum(bin(byte)[2::2].count("1") for byte in data) % 2
+    parity += bin(int.from_bytes(data))[::2].count('1') % 2 << 6
     # Count mod 2 the number of set (1) odd bits in the byte data
-    odd_parity_bit = sum(bin(byte)[3::2].count("1") for byte in data) % 2
+    parity += bin(int.from_bytes(data))[3::2].count('1') % 2 << 5
     # Count mod 2 the number of set (1) third bits in the byte data
-    third_parity_bit = sum(bin(byte)[2::3].count("1") for byte in data) % 2
+    parity += bin(int.from_bytes(data))[::3].count('1') % 2 << 4
 
-    combined_parity = (parity_bit + even_parity_bit * 2 + odd_parity_bit * 4
-                       + third_parity_bit * 8)
-    return combined_parity.to_bytes(1, 'little')
+    return parity.to_bytes()
 
 
 def encode(hrp, k, ident, share_index, payload):
@@ -260,7 +260,10 @@ def encode(hrp, k, ident, share_index, payload):
     :param payload: Payload data to be encoded.
     :return: Codex32 string or None if validation fails.
     """
-    checksum = ecc_padding(bytes(k + ident + share_index, "utf") + payload)
+    if share_index.lower() == 's':
+        checksum = ecc_padding(payload)
+    else:
+        checksum = ecc_padding(bytes(k + share_index, "utf") + payload)
     data = convertbits(
         payload + checksum, 8, 5, False)[:len(convertbits(payload, 8, 5))]
     ret = ms32_encode(hrp, [CHARSET.find(x.lower()) for x in
@@ -576,3 +579,58 @@ def kdf_share(passphrase, codex32_str):
     payload = hmac.digest(derived_key, b"Passphrase share payload with index "
                           + bytes(share_index, "utf"), "sha512")[:len(payload)]
     return encode("ms", k, ident, share_index, payload)
+
+
+def numberToBase(n, b, fixed_length=0):
+    if not fixed_length and n == 0:
+        return [0]
+    digits = []
+    while n or len(digits) < fixed_length:
+        digits.append(int(n % b))
+        n //= b
+    return digits[::-1]
+
+def encode_compact_qr(codex32_str):
+    import qrcode
+    from qrcode.image.styledpil import StyledPilImage
+    from qrcode.image.styles.moduledrawers.pil import CircleModuleDrawer
+    big_num = 0
+    b45_encoded = ''
+    hrp, k, ident, share_index, data = ms32_decode(codex32_str)
+    if hrp != 'ms':
+        return None
+    if share_index == 's':
+        _, _, _, master_seed = decode('ms', codex32_str)
+        parity = ecc_padding(master_seed)
+        last_two_bits = int.from_bytes(parity, 'big') % 64 >> 4
+    elif int(k) < 6:
+        last_two_bits = int(k) - 2
+    else:
+        return None
+    base32 = data[5:]
+    for i, character in enumerate(base32):
+        big_num += character * 32 ** (26 - i)
+    bigger_num = big_num * 4 + last_two_bits
+    for index in numberToBase(bigger_num, 45, 25):
+        b45_encoded += BASE45_CHARSET[index]
+    qr = qrcode.QRCode(
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=24,
+        border=4,
+    )
+    qr.add_data(b45_encoded)
+    img = qr.make_image(image_factory=StyledPilImage, module_drawer=CircleModuleDrawer())
+    img.show()
+
+
+def decode_compact_qr(hrp, last_k, ident, string):
+    big_num = 0
+    for i, character in enumerate(string):
+        big_num += BASE45_CHARSET.find(character) * 45 ** (24 - i)
+    bech32 = numberToBase(big_num//4, 32, 27)
+    k = '0' if bech32[0] == 16 else str(big_num % 4 + 2)
+    if last_k != '?' and k != last_k:
+        return None
+    if ident != '????':
+        return ms32_encode(hrp, [CHARSET.find(x.lower()) for x in k + ident] + bech32)
+    return hrp + "1" + k + ident + "".join([CHARSET[d] for d in bech32]) + '?' * 13

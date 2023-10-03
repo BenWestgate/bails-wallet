@@ -1,4 +1,4 @@
 setuptools~=65.5.1
 PyGObject~=3.44.1
-cryptography~=38.0.4
+cryptography~=39.0.1
 qrcode~=7.4.2

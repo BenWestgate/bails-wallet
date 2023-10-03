@@ -1,10 +1,10 @@
 import gi
-import qrcode
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, Pango
 import codex32
 import secrets
+from electrum.bip32 import BIP32Node
 
 
 class Codex32EntryDialog:
@@ -19,6 +19,7 @@ class Codex32EntryDialog:
         self.entry.set_activates_default(True)
         self.entry.set_text(self.prefill.upper())  # Convert to uppercase
         self.entry.set_position(len(self.prefill) + 1)
+
 
     def create_dialog(self):
         dialog = Gtk.Dialog(
@@ -292,30 +293,37 @@ class Codex32EntryDialog:
             return bech32_string, new_prefill
 
 
+def get_masterkey(hrp, codex32_secret):
+    print(codex32_secret)
 
 if __name__ == "__main__":
     dialog = Codex32EntryDialog(title="Enter a codex32 secret or share", prefill='MS1',
                  text='Type your codex32 string:', used_indexes=[])
-    codex32_string_list = []
-    used_indexes = []
+    codex32_string_set = set()
+    used_indexes = set()
     k = 1
 
-    while k > len(codex32_string_list):
+    while k > len(codex32_string_set):
         result = dialog.create_dialog()
         if result:
+            print(result)
             pos = result[0].rfind("1")
             hrp = result[0][:pos]
             if len(result[0]) > 47:
-                codex32_string_list += [result[0]]
+                codex32_string_set.add(result[0])
                 if 'S' == result[0][8]:
                     print("Done! " + result[0] + " is the secret!")
-                    print(codex32.decode(hrp, result[0])[3])
-            for share in codex32_string_list:
+                    print(BIP32Node.from_rootseed(codex32.decode(hrp, result[0])[3],xtype='standard').to_xprv())
+                    break
+            if len(codex32_string_set) == k:
+                print(BIP32Node.from_rootseed(codex32.recover_master_seed(list(codex32_string_set)),xtype='standard').to_xprv())
+
+            for share in codex32_string_set:
                 print(share)
-                used_indexes += [share[8]]
+                used_indexes.add(share[8])
             k = int(result[0][pos + 1])
             print("User entered:", result)
             print(used_indexes)
-            dialog = Codex32EntryDialog(title="Enter codex32 share " + str(len(codex32_string_list) + 1) + " of " + str(k), prefill=result[1], text='Type your codex32 share:', used_indexes=used_indexes)
-    if len(codex32_string_list) > 1:
-        print(codex32.recover_master_seed(codex32_string_list))
+            dialog = Codex32EntryDialog(title="Enter codex32 share " + str(len(codex32_string_set) + 1) + " of " + str(k), prefill=result[1], text='Type your codex32 share:', used_indexes=used_indexes)
+        else:
+            break

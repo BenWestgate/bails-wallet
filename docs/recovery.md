@@ -5,9 +5,9 @@ BailsWallet creates extended public keys for the coordinator following [slip-013
 Derivation paths for standard script types for mainnet:
 
 - Single Sig
-	- Native Taproot
+	- Taproot
 		- Derivation Path: m/86'/0'/0'
-		- Script Type: P2WPKH
+		- Script Type: P2TR
 		- Public Key Encoding: 0x0488B21E - xpub
 	- Native Segwit
 		- Derivation Path: m/84'/0'/0'
@@ -17,11 +17,15 @@ Derivation paths for standard script types for mainnet:
 		- Derivation Path: m/49'/0'/0'
 		- Script Type: P2WPKH in P2SH
 		- Public Key Encoding: 0x0488B21E - xpub
-	- Legacy Pubkey Hash
-        - Derivation Path: m/49'/0'/0'
+	- Legacy
+        - Derivation Path: m/44'/0'/0'
 		- Script Type: P2PKH
-		- Public Key Encoding: 0x0488B21E - xpub	    
+		- Public Key Encoding: 0x0488B21E - xpub
 - Multisig
+	- Taproot
+		- Derivation Path: m/48'/0'/0'/3'
+		- Script Type: P2TR
+		- Public Key Encoding: 0x0488B21E - xpub
 	- Native Segwit
 		- Derivation Path: m/48'/0'/0'/2'
 		- Script Type: P2WSH
@@ -30,6 +34,7 @@ Derivation paths for standard script types for mainnet:
 		- Derivation Path: m/48'/0'/0'/1'
 		- Script Type: P2WSH in P2SH
 		- Public Key Encoding: 0x0488B21E - xpub
+
 
 Changing the network settings from main to test in BailsWallet will change the public key encoding and derivation path following [slip-0132](https://github.com/satoshilabs/slips/blob/master/slip-0132.md) standards.
 

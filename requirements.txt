@@ -1,4 +1,4 @@
 setuptools~=65.5.1
 PyGObject~=3.44.1
 qrcode~=7.4.2
-bip32~=3.4
+bip32~=4.0

@@ -4,29 +4,48 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, Pango
 import codex32
 import secrets
-from electrum.bip32 import BIP32Node
-
 
 class Codex32EntryDialog:
-    def __init__(self, title="Enter a Codex32 secret or share", prefill='MS1',
-                 text='Type your Codex32 string:', used_indexes=[]):
-        self.valid_checksum = True  # Initialize as True
+    def __init__(self, title="Enter a codex32 secret or share", prefill='MS1',
+                 text='Type your codex32 string:', used_indexes=[]):
+        self.valid_checksum = False
         self.title = title
         self.text = text
         self.prefill = prefill.upper()
         self.used_indexes = used_indexes
         self.entry = Gtk.Entry()
         self.entry.set_activates_default(True)
-        self.entry.set_text(self.prefill.upper())  # Convert to uppercase
+        self.entry.set_text(self.prefill.upper())
         self.entry.set_position(len(self.prefill) + 1)
+        self.ok_button = Gtk.Button.new_with_label("Submit")
+        self.window = Gtk.Window(title=f"Enter your codex32")
 
-
+    def on_dialog_response(self, dialog, response_id):
+        # Handle the response types
+        if response_id == Gtk.ResponseType.CANCEL or response_id == Gtk.ResponseType.DELETE_EVENT:
+            # Close the dialog when Cancel is clicked
+            dialog.destroy()
     def create_dialog(self):
-        dialog = Gtk.Dialog(
+        entry = Gtk.Dialog(
             title=self.title,
-            buttons=(Gtk.STOCK_OK, Gtk.ResponseType.OK)
+            buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
         )
-        dialog.set_default_size(631, -1)
+        entry.set_default_size(631, -1)
+        entry.get_action_area().add(self.ok_button)
+        entry.connect("response", self.on_dialog_response)
+
+        def on_ok_button_clicked(button):
+            if self.valid_checksum:
+                entry.response(Gtk.ResponseType.OK)
+            else:
+                Gtk.window("Display the closest correction")
+        def on_entry_activate(entry):
+            if self.ok_button.get_sensitive():
+                self.ok_button.clicked()
+
+        self.ok_button.connect("clicked", on_ok_button_clicked)
+        self.ok_button.set_sensitive(False)
+        self.entry.connect("activate", on_entry_activate)
 
         label = Gtk.Label()
         label.set_text(self.text)
@@ -39,13 +58,10 @@ class Codex32EntryDialog:
         font_desc.set_family("Monospace")
         font_desc.set_size(Pango.units_from_double(12))
 
-        # Set the font for the entry
         self.entry.modify_font(font_desc)
 
-        # Define custom colors
         red_color = Gdk.RGBA()
         red_color.parse("red")
-
         green_color = Gdk.RGBA()
         green_color.parse("green")
 
@@ -61,13 +77,15 @@ class Codex32EntryDialog:
                     if char == '1':
                         corr_char = secrets.choice(['2', '?'])
                     elif char == 'Q':
-                        corr_char = secrets.choice(['2','?'])
+                        corr_char = secrets.choice(['2', '?'])
                     elif char == 'W':
                         corr_char = secrets.choice(['2', '2', '3', '?'])
                     elif char == 'E':
                         corr_char = secrets.choice(['3', '3', '4', '?'])
                     elif char == 'R':
                         corr_char = secrets.choice(['4', '5', '?'])
+                    elif char == 'S':
+                        corr_char = secrets.choice([ '5', '?'])
                     elif char == 'T':
                         corr_char = secrets.choice(['3', '5', '6', '7', '?'])
                     elif char == 'Y':
@@ -78,6 +96,10 @@ class Codex32EntryDialog:
                         corr_char = secrets.choice(['8', '9', '?'])
                     elif char == 'O':
                         corr_char = secrets.choice(['0', '0', '9', '?'])
+                    elif char == 'G':
+                        corr_char = secrets.choice(['9', '?'])
+                    elif char == 'D':
+                        corr_char = secrets.choice(['0', '?'])
                     elif char == 'P':
                         corr_char = secrets.choice(['3', '0', '?'])
                     elif char == '-':
@@ -87,7 +109,6 @@ class Codex32EntryDialog:
                     text = text[:pos + 1] + corr_char + text[pos + 2:]
 
             if len(text) > 10 and text[10] in self.used_indexes:
-                # Show a confirmation dialog
                 dialog = Gtk.MessageDialog(
                     parent=None,
                     flags=Gtk.DialogFlags.MODAL,
@@ -105,7 +126,6 @@ class Codex32EntryDialog:
                     text = text[:10] + '?' + text[11:]
                 else:
                     text = text[:10] + text[11:]
-
             for char in text[len(self.prefill):]:
                 if char in codex32.CHARSET.upper():
                     sanitized_text += char
@@ -149,17 +169,52 @@ class Codex32EntryDialog:
                 entry.set_position(len(self.prefill))
 
             codex32_str = sanitized_text.replace(" ", "")
-            if len(codex32_str) >= 48:
-                if codex32.decode('ms', codex32_str) == (None, None, None, None):
+            if len(codex32_str) > 43: # change to if checksum passes or a correction is found that passes
+                self.ok_button.set_sensitive(True)
+
+            else:
+                self.ok_button.set_sensitive(False)
+            try:
+                codex32.Codex32.decode(codex32_str)
+                entry.override_color(Gtk.StateFlags.NORMAL, green_color)
+                self.valid_checksum = True
+                self.ok_button.set_label("Submit")
+                self.ok_button.grab_focus()
+            except Exception as e:
+                print(e)
+                self.valid_checksum = False
+                if str(e) == "Decoding failed: Invalid length" or "Parsing failed: Data part is too short, no threshold parameter found":
+                    entry.override_color(Gtk.StateFlags.NORMAL, None)
+                else:
+                    warning_popup('ERROR', e)
                     # TODO: add a message explaining an invalid checksum.
                     entry.override_color(Gtk.StateFlags.NORMAL, red_color)
-                    self.valid_checksum = False
-                else:
-                    entry.override_color(Gtk.StateFlags.NORMAL, green_color)
-                    self.valid_checksum = True
-            else:
-                if self.valid_checksum or len(codex32_str) == len(self.prefill):
-                    entry.override_color(Gtk.StateFlags.NORMAL, None)
+                    self.ok_button.set_label("Suggest Correction")
+            if len(codex32_str) == len(self.prefill):
+                entry.override_color(Gtk.StateFlags.NORMAL, None)
+                self.ok_button.set_label("Submit")
+            self.valid_checksum = False
+
+
+        def space_text(entry):
+            # Get the current text from the entry and convert it to uppercase
+            orig_text = entry.get_text().upper()
+
+            # Remove any existing spaces
+            text = orig_text.replace(" ", "")
+
+            # Add a space after every 4 non-space characters
+            spaced_text = ""
+            for i, char in enumerate(text.upper()):
+                if i > 0 and i % 4 == 0:
+                    spaced_text += " "
+                if i > 0 and i % 24 == 0:
+                    spaced_text += " "
+                spaced_text += char
+
+            if orig_text != spaced_text:
+                # Set the modified text back to the entry
+                entry.set_text(spaced_text)
 
         def on_key_release(entry, event):
             # Get the current cursor position
@@ -222,7 +277,7 @@ class Codex32EntryDialog:
                     if codex32_str[-40] in self.used_indexes:
                         return index_reused()
                     self.entry.set_text(codex32_str)
-                    dialog.response(Gtk.ResponseType.OK)  # press OK button
+                    entry.response(Gtk.ResponseType.OK)  # press OK button
                 elif len(scanned_text) > 46:
                     if len(scanned_text) < 48:
                         for last_char in codex32.CHARSET:
@@ -236,31 +291,29 @@ class Codex32EntryDialog:
                         if scanned_k != k or scanned_ident != ident:
                             return header_mismatch()
                         self.entry.set_text(scanned_text)  # Update the entry
-                        dialog.response(Gtk.ResponseType.OK)  # press OK button
-        def index_reused():
-            index_warning_dialog = Gtk.MessageDialog(
-                parent=None,
-                flags=Gtk.DialogFlags.MODAL,
-                type=Gtk.MessageType.WARNING,
-                buttons=Gtk.ButtonsType.OK,
-                message_format="The share you've scanned is a repeat."
-            )
-            index_warning_dialog.set_title("Scan a fresh share index")
-            index_warning_dialog.run()
-            index_warning_dialog.destroy()
-            return None
-        def header_mismatch():
+                        entry.response(Gtk.ResponseType.OK)  # press OK button
+        
+        def warning_popup(title, msg):
             warning = Gtk.MessageDialog(
                 parent=None,
-                flags=Gtk.DialogFlags.MODAL,
-                type=Gtk.MessageType.WARNING,
+                modal=True,
+                message_type=Gtk.MessageType.WARNING,
                 buttons=Gtk.ButtonsType.OK,
-                message_format="The header of your scanned share does not match previous shares."
+                text=msg
             )
-            warning.set_title("Mismatched share scanned")
+            warning.set_title(title)
             warning.run()
             warning.destroy()
-            return None
+        
+        def index_reused():
+            msg = "The share you've scanned is a repeat."
+            title = "Scan a fresh share index"
+
+        def header_mismatch():
+            msg = "The header of your scanned share does not match previous shares."
+            title = "Mismatched share scanned"
+            warning_popup(title, msg)
+
 
         # Connect the signals
         self.entry.connect("key-release-event", on_key_release)
@@ -269,13 +322,13 @@ class Codex32EntryDialog:
         scan_button = Gtk.Button.new_with_label("Scan QR Code")
         scan_button.connect("clicked", on_scan_button_clicked)
 
-        box = dialog.get_content_area()
+        box = entry.get_content_area()
         box.add(label)
         box.add(self.entry)
         box.add(scan_button)
-        dialog.show_all()
+        entry.show_all()
 
-        response = dialog.run()
+        response = entry.run()
         if response == Gtk.ResponseType.OK:
             bech32_string = self.entry.get_text().replace(" ", "")
             string = ""
@@ -286,44 +339,14 @@ class Codex32EntryDialog:
                     string += " "
                 string += char
             if not string:
-                dialog.destroy()
+                entry.destroy()
                 return None
-            dialog.destroy()
+            entry.destroy()
             new_prefill = string[:10]
             return bech32_string, new_prefill
-
-
-def get_masterkey(hrp, codex32_secret):
-    print(codex32_secret)
-
+        
 if __name__ == "__main__":
-    dialog = Codex32EntryDialog(title="Enter a codex32 secret or share", prefill='MS1',
-                 text='Type your codex32 string:', used_indexes=[])
-    codex32_string_set = set()
-    used_indexes = set()
-    k = 1
-
-    while k > len(codex32_string_set):
-        result = dialog.create_dialog()
-        if result:
-            print(result)
-            pos = result[0].rfind("1")
-            hrp = result[0][:pos]
-            if len(result[0]) > 47:
-                codex32_string_set.add(result[0])
-                if 'S' == result[0][8]:
-                    print("Done! " + result[0] + " is the secret!")
-                    print(BIP32Node.from_rootseed(codex32.decode(hrp, result[0])[3],xtype='standard').to_xprv())
-                    break
-            if len(codex32_string_set) == k:
-                print(BIP32Node.from_rootseed(codex32.recover_master_seed(list(codex32_string_set)),xtype='standard').to_xprv())
-
-            for share in codex32_string_set:
-                print(share)
-                used_indexes.add(share[8])
-            k = int(result[0][pos + 1])
-            print("User entered:", result)
-            print(used_indexes)
-            dialog = Codex32EntryDialog(title="Enter codex32 share " + str(len(codex32_string_set) + 1) + " of " + str(k), prefill=result[1], text='Type your codex32 share:', used_indexes=used_indexes)
-        else:
-            break
+    dialog = Codex32EntryDialog()
+    dialog_window = dialog.create_dialog()
+    dialog_window.run()
+    Gtk.main()

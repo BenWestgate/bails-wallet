@@ -1,4 +1,4 @@
-# CodexQR Format Specification
+# Codex32 QR and CodexQR Format Specification
 
 [Bails](https://github.com/SeedSigner/seedsigner/) is an open source, DIY, fully-airgapped Bitcoin hardware wallet that wipes all private data from memory each time it's turned off. That means users need to re-enter their codex32 backup each time they use it.
 
@@ -26,7 +26,7 @@ Each character comes from the [bech32 character set](https://github.com/bitcoin/
 
 
 # "Standard" `Codex32 QR` Specification
-We take the alphanumeric characters of the codex32 string, convert to UPPERCASE and only for 48 character strings, truncate the last character. This allows the 128-bit format to fit in a 25x25 QR code. 256-bit seed 74 character strings fit without truncation in a 29x29 QR code.
+We take the alphanumeric characters of the codex32 string, convert to UPPERCASE and for 48 character strings only, truncate the last character. This allows the 128-bit format to fit in a 25x25 QR code. 256-bit seed, 74 character strings fit without truncation in a 29x29 QR code.
 
 Using the example above:
 
@@ -84,13 +84,13 @@ Armed with this knowledge, we're ready to encode our CodexQR.
 
 
 ## Generate the CodexQR
-Our CodexQR data will consist solely of alphanumeric characters so that we can use the more efficient "Alphanumeric" format. Our 128-bit codex32 strings require:
+Our codex32 QR data will consist solely of uppercase alphanumeric characters so that we can use the more efficient "Alphanumeric" format. Our 128-bit codex32 strings require:
 
 ```
-48 characters = 48 digits
+48 characters = 48 uppercase alphanumeric characters
 ```
 
-48 alphanumeric characters won't fit in a 21x21 using the "L" (Low) error correction mode (max Alphanumeric capacity is 25) but will almost fit in a 25x25:
+48 alphanumeric characters won't fit in a 21x21 using the "L" (Low) error correction mode (max alphanumeric capacity is 25) but will almost fit in a 25x25:
 
 <table align="center">
     <tr><td><img src="img/standard_12word.png"></td></tr>
@@ -110,7 +110,7 @@ And see for yourself that the digit stream matches what was generated above from
 
 At this point it is trivial for Bails or other Bitcoin hardware wallets or humans to parse the alphanumeric string and rebuild your entire codex32 backup. When marked as an erasure `'?'` the missing 48th character will be instantly corrected by the [error correction](https://github.com/bitcoin/bips/blob/master/bip-0093.mediawiki#user-content-Error_Correction) of BIP93.
 
-Looking back at the QR code capacity chart for Alphanumeric data, we know exactly how large the resulting CodexQRs will be:
+Looking back at the QR code capacity chart for Alphanumeric data, we know exactly how large the resulting codex32 QRs will be:
 ```
 128-bit seed (47 characters) = 25x25
 256-bit seed (72 characters) = 29x29

@@ -8,9 +8,8 @@ BASE45_CHARSET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:"
 
 class Encoding(Enum):
     """Enumeration type to list the various supported encodings."""
-    MS10_SECRET = 1
-    MS12_SHARE = 2
-    MS13_SHARE = 3
+    MS10_SECRET = 0
+    MS1K_SHARE = 1
 
 
 def bin_polymod(values):
@@ -27,9 +26,11 @@ def bin_polymod(values):
     # Return the last 9 bits as the CRC
     return crc & (2 ** 9 - 1)
 
+
 def bin_hrp_expand(hrp):
     """Expand the HRP into values for checksum computation."""
     return convertbits(bytes(hrp, 'utf'), 8, 1)
+
 
 def bin_verify_checksum(hrp, data):
     """Verify a checksum given HRP and converted data characters."""
@@ -41,48 +42,12 @@ def bin_verify_checksum(hrp, data):
         return const
     return None
 
+
 def bin_create_checksum(hrp,data, header):
     values = bin_hrp_expand(hrp) + data
     if header[0] == '0':
         const = 0b111111111
     return convertbits([const],9,1)
-
-
-
-# After the data 9.296327408 remain, there is 
-# Different thresholds have a different encoding because they have 
-# different data most urgently needed. The secret needs nothing. t=2
-# shares need the fingerprint.
-# use the rest of the space for the ID.
-# Since the Index is known, we can assign to each share a different
-# symbol from the ID.
-# For threshold 2, just use the first symbol for all shares.
-# This is the symbol that should be tweaked when resharing.
-# For threshold 3:
-# when we have scanned 2, we know 15-bits about the ID, we could use
-# par2 style parity coding to display what we can at each step.
-# 5 bits of char 1
-# 2.5 bits of char 2
-# 1.667 bits of char 3
-# 1.25 bits of char 4
-# 10.416666667 bits total, won't work.
-# 5 bits of char 1
-# 2.5 bits of char 2
-# 1.667 bits of char 3
-# 0.129327 bits remain, we discourage t>3 so lets just do char 1 & char 2
-# 5 bits of char 1
-# 2.5 bits of char 2
-# Leaves 1.796327 bits remaining
-# Which supports 3.473348087 thresholds.
-# Lets interleave the 4 id symbols across different shares
-# index = 0 is id[0], index = 1 is id[1] and so forth. This way we
-# always get at least 1 char of the string and when scanning more we
-# have 3/4 chance of learning another.
-# 2nd share, two possibilities: We know 2 char of id or 1.
-# say it's 1, with 3 bits left, we'd need to have encoded 7.5 bits
-# to always fill them after 2 scans.
-# say it's 2, with 2 char left, we can fill this in 2 scans if we
-# encoded 5 bits per secret. But theres no room for that either.
 
 
 def bin_create_checksum(hrp, data, spec):
@@ -92,32 +57,50 @@ def bin_create_checksum(hrp, data, spec):
     polymod = bin_polymod(values + [0, 0, 0, 0, 0, 0, 0, 0, 0]) ^ const
     return convertbits([polymod], 9, 1)
 
-qr_data = b'\x00' * 16 # run(['zbarimg','--raw','--oneshot','-Sbinary','qr.png'], capture_output=True).stdout
+
 def decode(qr_data):
     if len(qr_data) == 16: # CompactSeedQR BIP39
+        print('compactSeedQR')
         from mnemonic import Mnemonic
         bip39 = Mnemonic()
         mnemonic = bip39.to_mnemonic(qr_data)
         seed = bip39.to_seed(mnemonic)
-    
+        payload = seed
     elif len(qr_data) == 17:
         # CompactCodexQR - bytes mode 8 bits, 256 codes
+        print('compactCodexQR - bytes')
         payload = qr_data[:16]
     elif len(qr_data) == 41 and all(char.isdigit() for char in str(qr_data)):
         # CompactCodexQR - numeric mode 8.2 bits, 293 codes
+        print('compactCodexQR - numeric')
         payload = int(qr_data).to_bytes(18,'big')[:16]
     elif len(qr_data) == 25 and all(char in BASE45_CHARSET for char in str(qr_data)):
         # CompactCodexQR - alphanumeric mode 9.3 bits, 628 codes
+        print('compactCodexQR - alphanum')
         data = [BASE45_CHARSET.find(x) for x in str(qr_data)]
         data_int = sum(value ** (exp + 1) for exp, value in enumerate(data))
         payload = int.to_bytes(data_int, 18, 'big')[:16]
     else:
+        print('Codex32_QR - alphanum')
         codex32string = qr_data
-    master_key = bip39.to_hd_master_key(seed)
+        payload = codex32string        
+    #master_key = bip39.to_hd_master_key(seed)
     return payload
 
-# Total code space is 256 + 293 + 628 = 1177 or 10.2 bits
+def encode(codex32_string):
+    t = int(codex32_string[3])
+    # there is not enough room for all 4 characters
+    partial_id = codex32_string[4:5]if t == 3 else codex32_string[4]
+    
 
+
+
+qr_data = b'\x00' * 17 # run(['zbarimg','--raw','--oneshot','-Sbinary','qr.png'], capture_output=True).stdout
+decoded = decode(qr_data)
+print(len(decoded))
+print(decoded)
+
+exit()
 import qrcode
 from qrcode.image.styledpil import StyledPilImage
 from qrcode.image.styles.moduledrawers.pil import CircleModuleDrawer, GappedSquareModuleDrawer

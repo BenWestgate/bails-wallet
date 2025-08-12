@@ -31,6 +31,7 @@ class Encoding(Enum):
 CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 BECH32M_CONST = 0x2bc830a3
 
+
 def bech32_polymod(values):
     """Internal function that computes the Bech32 checksum."""
     generator = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
@@ -136,7 +137,7 @@ def encode(hrp, witver, witprog):
         return None
     return ret
 
-import hmac
+"""import hmac
 from hashlib import sha256
 from bip32 import BIP32, utils
 from bip32.utils import _pubkey_to_fingerprint
@@ -206,7 +207,6 @@ print(100* errors_undetected/trials)
 
 exit()
 def ms32_create_fingerprint_id(fp):
-    """Converts the fingerprint to bech32 and truncates to length 4."""
     return
 
 #master_pubkey = BIP32.from_seed(master_seed).get_pubkey_from_path("m")
@@ -237,3 +237,4 @@ print(CHARSET.index('p'))
 print(CHARSET.index('0'))
 print(CHARSET.index('2'))
 print(CHARSET.index('3'))
+"""

@@ -2,23 +2,29 @@
 # Author: Leon Olsson Curr and Pearlwort Sneed <pearlwort@wpsoftware.net>
 # License: BSD-3-Clause
 
-import hashlib
-import hmac
+"""Reference implementation for codex32/codexQR BIP32 seed backups."""
 
-# ChaCha20 used for better keystream option for shuffle
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+
+import hmac
+from hashlib import sha512, sha256, scrypt
+from bip32 import BIP32
+from bip32.utils import _pubkey_to_fingerprint, _ripemd160
+from secrets import token_bytes
+from segwit_addr import bech32_hrp_expand
+from enum import Enum
+
+
 #from electrum.bip32 import BIP32Node
-#from electrum.crypto import hash_160
+
 
 CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+BASE45_CHARSET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:"
 MS32_CONST = 0x10CE0795C2FD1E62A
 MS32_LONG_CONST = 0x43381E570BF4798AB26
 bech32_inv = [
     0, 1, 20, 24, 10, 8, 12, 29, 5, 11, 4, 9, 6, 28, 26, 31,
     22, 18, 17, 23, 2, 25, 16, 19, 3, 21, 14, 30, 13, 7, 27, 15,
 ]
-
-BASE45_CHARSET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:"
 
 
 def ms32_polymod(values):
@@ -104,6 +110,7 @@ def bech32_lagrange(l, x):
 
 
 def ms32_interpolate(l, x):
+#    print(l)
     w = bech32_lagrange([s[5] for s in l], x)
     res = []
     for i in range(len(l[0])):
@@ -118,7 +125,7 @@ def ms32_recover(l):
     return ms32_interpolate(l, 16)
 
 
-# Copyright (c) 2023 Ben Westgate
+# Copyright (c) 2024 Ben Westgate
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -139,58 +146,44 @@ def ms32_recover(l):
 # THE SOFTWARE.
 
 
-def ms32_encode(hrp, data):
-    """
-    Compute an MS32 string.
+class Encoding(Enum):
+    """Enumeration type to list the various supported encodings."""
+    CODEX32_SHARE = 0 # Codex32 share
+    CODEX32_SECRET = 1 # Codex32 secret
+    CODEXQR_SHARE = 2 # CodexQR share (compatible with codex32)
+    CODEXQR_SECRET = 3 # CodexQR secret (compatible with codex32)
 
-    :param hrp: Human-readable part of the ms32 string, usually 'ms'.
-    :param data: List of base32 integers representing data to encode.
-    :return: MS32 encoded string with the given HRP and data.
-    """
-    combined = data + ms32_create_checksum(data)
-    return hrp + "1" + "".join([CHARSET[d] for d in combined])
+class Binary:
+    def __init__(self, bin_data: list):
+        self.bin_data = bin_data
 
+    @classmethod
+    def from_ms32(cls, ms32str):
+        MS32.decode(ms32str)
 
-def ms32_decode(ms32_str):
-    """
-    Validate an MS32 string and extract components.
-
-    :param ms32_str: The MS32 encoded string to be validated.
-    :return: Tuple: HRP, k, ident, share index, data. If invalid,
-             (None, None, None, None, None)
-    """
-    if ((any(ord(x) < 33 or ord(x) > 126 for x in ms32_str))
-            or ms32_str.lower() != ms32_str and ms32_str.upper() != ms32_str):
-        return None, None, None, None, None
-    ms32_str = ms32_str.lower()
-    pos = ms32_str.rfind("1")
-    if pos < 1 or pos + 46 > len(ms32_str):
-        return None, None, None, None, None
-    if not all(x in CHARSET for x in ms32_str[pos + 1:]):
-        return None, None, None, None, None
-    hrp = ms32_str[:pos]
-    k = ms32_str[pos + 1]
-    ident = ms32_str[pos + 2: pos + 6]
-    share_index = ms32_str[pos + 6]
-    if not k.isdigit() or k == "0" and share_index != "s":
-        return None, None, None, None, None
-    data = [CHARSET.find(x) for x in ms32_str[pos + 1:]]
-    checksum_length = 13 if len(data) < 95 else 15
-    if not ms32_verify_checksum(data):
-        return None, None, None, None, None
-    return hrp, k, ident, share_index, data[:-checksum_length]
+def bin_crc(crc_len, values):
+    """Internal function that computes the codexQR CRC checksum."""
+    if crc_len < 5: # Codex32 string padding
+        # Define the CRC polynomial (x^crc_len + x + 1) optimal for 1-4
+        polynomial = (0b1 << crc_len) | 0b11
+    elif crc_len == 7: # 21x21 CodexQR share index and padding
+        # Define the CRC-7 0x5b => factors	x^7+x^5+x^4+x^2+x+1 
+        polynomial = 0b10110111
+        # when a symbol errors occurs, odds 16:15 it is odd parity
+        # this checksum detects all odd errors, so slightly outperforms
+        # when there are 9 errors which codex32 checksum can't detect.
+    crc = 0
+    for bit in values:
+        crc = (crc << 1) | int(bit) # Shift in the next bit
+        # If the leftmost bit (MSB) is 1, XOR with the polynomial
+        if crc & (0b1 << crc_len):
+            crc ^= polynomial
+    # Return the last crc_len bits as the CRC
+    return crc & (2 ** crc_len - 1)
 
 
-def convertbits(data, frombits, tobits, pad=True):
-    """
-    Perform general power-of-2 base conversion.
-
-    :param data: List of integers to be converted.
-    :param frombits: Original base's bit size.
-    :param tobits: Target base's bit size.
-    :param pad: Whether to pad the result, defaults to True.
-    :return: List of integers in target base, or None on failure.
-    """
+def convertbits(data, frombits, tobits, pad=True, verify=False):
+    """General power-of-2 base conversion with CRC padding."""
     acc = 0
     bits = 0
     ret = []
@@ -204,73 +197,500 @@ def convertbits(data, frombits, tobits, pad=True):
         while bits >= tobits:
             bits -= tobits
             ret.append((acc >> bits) & maxv)
-    if pad:
-        if bits:
-            ret.append((acc << (tobits - bits)) & maxv)
+    if pad and bits:
+        crc_len = tobits - bits
+        crc = bin_crc(crc_len, convertbits(data, frombits, 1) + crc_len * [0])
+        ret.append(((acc << crc_len) + crc) & maxv)
     elif bits >= frombits:
         return None
-    return ret
-
-
-def decode(hrp, codex_str):
-    """
-    Decode a codex32 string.
-
-    :param hrp: Human-readable part of the codex32 string usually 'ms'.
-    :param codex_str: Codex32 string to be decoded.
-    :return: Tuple: k, ident, share index, decoded bytes.
-             If decoding fails, (None, None, None, None).
-    """
-    hrpgot, k, ident, share_index, data = ms32_decode(codex_str)
-    if hrpgot != hrp.lower():
-        return None, None, None, None
-    decoded = convertbits(data[6:], 5, 8, False)
-    if decoded is None or len(decoded) < 16 or len(decoded) > 64:
-        return None, None, None, None
-    return k, ident, share_index, bytes(decoded)
-
-
-def ecc_padding(data):
-    """
-    Calculate and return a byte with concatenated parity bits.
-
-    :param data: Bytes of seed_len, hrp, k, ident, index and payload.
-    :return: Byte with concatenated parity in most significant bits.
-    """
-    # Count mod 2 the number of set (1) bits in the byte data
-    parity = bin(int.from_bytes(data)).count('1') % 2 << 7
-    # Count mod 2 the number of set (1) even bits in the byte data
-    parity += bin(int.from_bytes(data))[::2].count('1') % 2 << 6
-    # Count mod 2 the number of set (1) odd bits in the byte data
-    parity += bin(int.from_bytes(data))[3::2].count('1') % 2 << 5
-    # Count mod 2 the number of set (1) third bits in the byte data
-    parity += bin(int.from_bytes(data))[::3].count('1') % 2 << 4
-
-    return parity.to_bytes()
-
-
-def encode(hrp, k, ident, share_index, payload):
-    """
-    Encode a codex32 string.
-
-    :param hrp: Human-readable part of the codex32 string.
-    :param k: Threshold parameter as a string.
-    :param ident: Identifier as a string.
-    :param share_index: Share index as a string.
-    :param payload: Payload data to be encoded.
-    :return: Codex32 string or None if validation fails.
-    """
-    if share_index.lower() == 's':
-        checksum = ecc_padding(payload)
-    else:
-        checksum = ecc_padding(bytes(k + share_index, "utf") + payload)
-    data = convertbits(
-        payload + checksum, 8, 5, False)[:len(convertbits(payload, 8, 5))]
-    ret = ms32_encode(hrp, [CHARSET.find(x.lower()) for x in
-                            k + ident + share_index] + data)
-    if decode(hrp, ret) == (None, None, None, None):
+    elif verify and bin_crc(bits, convertbits(data, frombits, 1)):
         return None
     return ret
+
+
+class MS32:
+    """Operations on MS32 encoded data."""
+    def __init__(self, data: list, chk=True):
+        self.data = data
+        self.chk = chk
+
+    @classmethod
+    def decode(cls, ms32str):
+        """Validate an MS32 string, and determine data."""
+        if ((any(ord(x) < 33 or ord(x) > 126 for x in ms32str)) or
+            (ms32str.lower() != ms32str and ms32str.upper() != ms32str)):
+            raise Exception("Parsing failed: MUST be entirely uppercase or entirely lowercase")
+        ms32str = ms32str.lower()
+        pos = ms32str.rfind('1')
+        if pos + 2 > len(ms32str):
+            raise Exception("Parsing failed: Data part is too short, no threshold parameter found")
+        if not all(x in '?' + CHARSET for x in ms32str[pos+1:]):
+            raise Exception('Parsing failed: Data part should consist only of alphanumeric characters excluding "1", "b", "i", and "o"')
+        return MS32([CHARSET.find(x) for x in ms32str[pos+1:]])
+    
+    @classmethod
+    def from_binary(cls, bin_data, chk=False, pad=False):
+        """Validate a binary string, and determine data."""
+        if any(x not in [0, 1] for x in bin_data):
+            raise Exception("Binary data must be a list of 0s and 1s")
+        #if len(bin_data) % 5:
+        #    raise Exception("Binary data length must be a multiple of 5")
+        return MS32(convertbits(bin_data, 1, 5, pad), chk)
+
+
+    def encode(self):
+        """Compute codex32 string data characters given data values."""
+        if not self.data:
+            return ""
+        combined = self.data
+        combined += ms32_create_checksum(self.data) if self.chk else []
+        return "".join([CHARSET[d] if d >= 0 else '?' for d in combined])
+    
+    def bin_encode(self):
+        """Compute bit list data given data values"""
+        return convertbits(self.data, 5, 1)
+
+
+class Codex32:
+    """Represents decoded codex32 parts."""
+    def __init__(self, hrp: str, threshold: int, id: str, share_idx: str,
+                 payload: list, spec: Encoding):
+        self.hrp = hrp  # "ms"
+        self.threshold = threshold  # 0, or 2-9
+        # Four valid bech32 characters which identify this complete codex32 secret
+        self.id = id.strip('?')
+        # Valid bech32 character identifying this share of the secret, or `s` for unshared
+        self.share_idx = share_idx
+        # The MS32 data payload
+        self.payload = payload
+        # The actual data payload bytes
+        self.payload_bytes = convertbits(payload, 5, 8, False)
+        # Is this a share, or a secret?
+        self.spec = spec 
+        # The header as a string
+        self.header = str(threshold) + id + share_idx
+
+    def parse_header(codex):
+        """Parse codex32 string to determine HRP, t, ID, index and data."""
+        data = MS32.decode(codex).data
+        codex = codex.lower()
+        pos = codex.rfind('1')
+        hrp = codex[:pos] if pos > 0 else ''
+        t = codex[pos + 1]
+        if not t.isdigit():
+            raise Exception('Parsing failed: The threshold parameter MUST be a single digit between "2" and "9", or the digit "0"')
+        id = codex[pos + 2:min(pos + 6, len(codex))] if len(codex) > pos + 2 else ''
+        share_idx = codex[pos + 6] if len(codex) > pos + 6 else 's' if t == '0' else ''
+        if t == '0' and share_idx not in 's' '?' '':
+            raise Exception('Parsing failed: The threshold parameter is "0" but the share index is not "s"')
+        data = [CHARSET.find(x) for x in codex[pos+1:]]
+        return hrp, int(t), id, share_idx, data
+
+    @classmethod
+    def decode(cls, codex: str, hrp='ms'):
+        """Decode a codex32 string and return a Codex32 instance."""
+        try:
+            hrpgot, threshold, id, index, data = cls.parse_header(codex)
+        except Exception as e:
+            raise e
+        
+        if hrp and hrpgot != hrp:
+            raise Exception("Decoding failed: HRP does not match")
+        if len(data) < 45 or len(data) > 124:
+            raise Exception("Decoding failed: Invalid length")
+        if not ms32_verify_checksum(data):
+            raise Exception("Decoding failed: Invalid checksum")
+        
+        payload = data[6:-13 if len(data) < 96 else -15]
+        spec = Encoding.CODEX32_SHARE if index != 's' else Encoding.CODEX32_SECRET
+        
+        codex32_instance = Codex32(
+            hrp,
+            threshold,
+            id,
+            index,
+            payload,
+            spec
+        )
+        return codex32_instance
+    
+    def get_fp_id(self): # TODO delete this if not used elsewhere
+        """Compute the BIP32 fingerprint in bytes."""
+        # TODO change this to use the new method I added to BIP32 library
+        fp = _pubkey_to_fingerprint(BIP32.from_seed(self.payload).pubkey)
+        return convertbits(fp, 8, 5)
+
+    def encode(self):
+        """Encode a codex32 string with or without codexQR support."""
+        if self.share_idx == 's' and len(self.id) < 4:
+            # fill the id with the BIP32 fingerprint
+            fp = _pubkey_to_fingerprint(BIP32.from_seed(self.payload).pubkey)
+            self.id += MS32(convertbits(fp, 8, 5)).encode()[len(self.id):4]
+        header = MS32.decode(str(self.threshold) + self.id + self.share_idx).data
+        ret = self.hrp + '1' + MS32(header + self.payload).encode()
+        try: self.decode(self, ret, self.hrp)
+        except: return None
+        return ret
+
+# Example usage:
+codex32_instance = Codex32(
+    "ms",
+    2,
+    "test",
+    "q",
+    b"1234567812345678",
+    Encoding.CODEX32_SHARE
+)
+
+class CodexQR:
+    """Represents decoded compactQR parts."""
+    def __init__(self, threshold: int, id: str, share_idx='', payload=b'', spec=Encoding.CODEXQR_SHARE):
+        # Shrink header into lossy values for CompactCodexQR support.
+        self.id_len = 10 if threshold == 3 else 5 if threshold else 2
+        if threshold > 8:
+            raise ValueError('CodexQR supports thresholds 0 and 2-8')
+        else:
+            self.threshold = threshold
+        threshold -= 1 if threshold else 0
+        self.bin_threshold = convertbits([threshold], 3, 1)
+        self.id = id[:self.id_len // 5]
+        self.bin_id = MS32.decode(id).bin_encode()[:self.id_len]
+        self.payload = convertbits(payload, 8, 1)
+        self.share_idx = convertbits([CHARSET.find(share_idx)], 5, 1)
+        # Is this codexQR compatible?
+
+    @classmethod
+    def from_header(cls, ms32str):
+        _, threshold, id, share_idx, _ = Codex32.parse_header(ms32str)
+        return CodexQR(threshold, id, share_idx)
+
+    @classmethod
+    def from_codex32str(cls, codex32str: str, hrp=''):
+        """Instantiate a CodexQR from a codex32 string."""
+
+        codex32 = Codex32.decode(codex32str, hrp)
+        params = codex32.threshold, codex32.id, codex32.share_idx, codex32.payload_bytes
+        codexqr = CodexQR(params)
+        # Verify codexQR-compatible index and padding given header and data
+        if len(codex32.payload) == 26 and codex32.threshold < 9: # Compact CodexQR reqs
+            if codex32.share_idx == 's' and convertbits(codex32.payload, 5, 8, False, True):
+                spec = Encoding.CODEXQR_SECRET
+            elif codex32.share_idx == codexqr.qr_idx():
+                spec = Encoding.CODEXQR_SHARE
+            else:
+                raise Exception('CodexQR incompatible: The share index and padding did not validate')
+        else:
+            raise Exception('CodexQR incompatible: Only 128-bit codex32 strings with threshold 0 or 2-8 have a compact encoding')
+        return CodexQR(params.add(spec))
+
+    def tiny_header(self):
+        return self.bin_threshold + self.bin_id 
+
+    def polymod(self):
+        values = self.tiny_header() + self.payload
+        return bin_crc(7, values + [0] * 7)
+
+    def qr_idx(self):
+        """Compute index and padding given header and binary data."""
+        return CHARSET[self.polymod() & 31]
+    
+    def padded_payload(self):
+        return self.payload + convertbits([self.polymod() >> 5], 2, 1)
+
+    def lossy_encode(self): # TODO rename me
+        """Encode a partial codex32 string from codexQR."""
+        hrp = 'ms1' # only supported HRP
+        ms32str = str(self.threshold)
+        ms32str += MS32.from_binary(self.bin_id).encode().ljust(4, '?')
+        ms32str += self.qr_idx() + MS32.from_binary(self.padded_payload()).encode()
+        return hrp + ms32str + '?' * 13 # add erasures for chksum
+        
+    def encode(self): # TODO another system must translate this to QRdata
+        # TODO another system will have to translate this into QR data
+        # using the cut offs of each QR mode's data length to assign
+        # all possible seeds and 
+        return int.from_bytes(bytes(convertbits(self.tiny_header() + self.payload, 1, 8)))
+
+
+    def is_compatible(self):
+        for pad in [0, 0], [0, 1], [1, 0], [1, 1]:
+            if bin_crc(7, self.tiny_header() + self.qr_idx + self.payload + pad) == 0:
+                return True
+        return False
+
+from random import randbytes
+
+print(CodexQR(0,'me', payload=randbytes(16)).lossy_encode())
+
+def codex32_secret(hrp: str, id: str, threshold: int, seed: bytes):
+    """Encode a seed into codex32 secret format."""
+    payload = convertbits(seed, 8, 5) # adds CRC padding
+    return Codex32(hrp, threshold, id, 's', payload, Encoding.CODEX32_SECRET)
+
+
+def get_salt(header, available_indexes, codexqr=False, seedlen=16):
+    """Create unique salt from codex32 header and available indexes."""
+    hrp, t, id, index, _ = Codex32.parse_header(header)
+    salt = seedlen.to_bytes(1)
+    if codexqr: # no hrp, compact header, wont collide
+        salt += bytes(CodexQR(t, id, index).tiny_header)
+    else: # TODO May have to make 's' CodexQRs switch to t == 0
+        salt += (hrp + '1' + t + id.ljust(4)).encode()
+    salt += index.ljust(1).encode()
+    salt += available_indexes.ljust(32).encode()
+    salt += codexqr.to_bytes(1)
+    return salt
+
+"""print(bin_tiny_header('0q'))
+print(bin_tiny_header('0s'))
+print(bin_tiny_header('3????s'))
+print(bin_tiny_header('3s???s'))
+
+
+#print(parse_header(header))
+print(get_salt('ms10q', CHARSET.replace('t',''), codexqr=True, seedlen=16))
+print(get_salt('ms10s', CHARSET.replace('t',''), codexqr=True, seedlen=16))
+print(get_salt('ms10?', CHARSET.replace('t',''), codexqr=True, seedlen=16))
+"""
+"""header = 'ms1'
+count = 0
+all_headers = set()
+#for codexqr in True, False:
+codexqr = True
+for i in range(0,9):
+        if i == 1:
+            continue
+        b = ''
+        for a in [''] + ['?'] + list(CHARSET):
+            if not i and CHARSET.find(a) % 8:
+                continue
+            header = str(i) + a
+            if i == 3 and a:
+                for b in [''] + ['?'] + list(CHARSET):
+                    header = str(i) + a + b
+                    new = get_salt('ms1' + header, CHARSET, codexqr=codexqr)
+                    if new in all_headers:
+                        print('ms1' + header)
+                        print(new)
+                    all_headers.add(new)
+                    count += 1
+            else:
+                new = get_salt('ms1' + header, CHARSET, codexqr=codexqr)
+                if new in all_headers:
+                    print('ms1' + header)
+                    print(new)
+                all_headers.add(new)
+                count += 1
+print(len(all_headers))
+print(count)
+exit()
+"""
+
+# Note the passphrase can be provided as entropy with a shrunk header 
+# and all indexes available except 's' for codexqr KDF share gen
+def generate_share(entropy, header, available_indexes,
+                    seedlen=16, codexqr=True):
+    """Generate a codex32 string from header and entropy."""
+    counter = 0  # Counter to track current position in the keystream.
+    password = entropy
+    salt = get_salt(header, available_indexes, codexqr, seedlen)
+    dk = scrypt(password, salt=salt, n=2 ** 20, r=8, p=1, maxmem=1025 ** 3,
+                 dklen=128)
+    hrp, t, id, index, _ = Codex32.parse_header(header)
+    if index in available_indexes:
+        return Codex32(hrp, t, id, index, dk[:seedlen]).encode
+    while index not in available_indexes:
+        digest = hmac.digest(dk, counter.to_bytes(8), 'sha512')[:seedlen]
+        counter += 1 # TODO may need to break if encode returns None
+        try: 
+            index = CodexQR('ms', t, id, '', digest).qr_idx # TODO test this doesn't give output w/o enough id
+            payload = MS32.from_binary(CodexQR('ms', t, id, '', digest).padded_payload)
+        except:
+            return None
+    return Codex32('ms', t, id, index, payload.data).encode
+
+
+def kdf_share(passphrase, header, seedlen=16, codexqr=True):
+    """Derive an MS32 share from a passphrase and a codex32 header"""
+    available_indexes = CHARSET.replace('s','') # every index free but s
+    entropy = passphrase.encode()
+    return generate_share(entropy, header, available_indexes, seedlen, codexqr)
+
+def validate_share_set(existing_shares, codexqr=False):
+    """Validate a codex32 share set and return list of MS32 shares"""
+    prefix = {}
+    used_indexes = {}
+    seedlen = {}
+    for codex in existing_shares:
+        header, data = decode('ms', codex, codexqr)
+        if not header:
+            return None
+        k = int(header[0]) if int(header[0]) else 1
+        # if k != len(existing_shares):
+        #     return None
+        prefix.add(header[:-1])
+        used_indexes.add(header[-1])
+        seedlen.add(len(data))
+    if len(prefix) != 1 or len(used_indexes) != k or len(seedlen) != 1:
+        return None
+    free_indexes = list(CHARSET)
+    for index in used_indexes:
+        free_indexes.remove(index)
+    return [ms32_decode(codex)[2] for codex in existing_shares], free_indexes, seedlen
+
+
+"""def fresh_master_seed(seedlen, t):
+    for i in range(t):
+"""
+
+
+def create_index_and_payload(header, entropy, seedlen=16,
+                             free_indexes=CHARSET.replace("s", "")):
+    """Compute the checksum index values given FP and seed"""
+    counter = 0  # Counter to track current position in the keystream.
+    digest = b""  # Storage for HMAC-SHA512 digest
+    index = ''
+    while CHARSET[index] not in free_indexes:
+        
+        
+        data = digest[:seedlen]
+        
+    return CHARSET[index], seed, free_indexes.replace(CHARSET[index], ''), counter
+
+
+def kdf_share(passphrase, codex32_str):
+    """
+    Derive codex32 share from a passphrase and the codex32 header.
+
+    Args:
+        passphrase: a seed backup passphrase as a string
+        codex32_str: a valid codex32 string to derive kdf share with.
+
+    Returns:
+        the string encoded kdf_share
+
+    """
+    k, ident, _, payload = decode("ms", codex32_str)
+    password = bytes(passphrase, "utf")
+    salt = len(payload).to_bytes(1) + bytes(codex32_str[:8], "utf")
+    derived_key = hashlib.scrypt(password, salt=salt, n=2 ** 20, r=8, p=1,
+                                 maxmem=1025 ** 3, dklen=128)
+    passphrase_index_seed = hmac.digest(
+        derived_key, b"Passphrase share index seed", "sha512")[:32]
+    share_index = shuffle_indices(
+        passphrase_index_seed, list(CHARSET.replace("s", ""))).pop()
+    payload = hmac.digest(derived_key, b"Passphrase share payload with index "
+                          + bytes(share_index, "utf"), "sha512")[:len(payload)]
+    return encode("ms", k, ident, share_index, payload)
+
+# If an ID is provided, generate k shares first, then the secret.
+# If an ID is not provided, generate the secret first, then k-1 shares.
+# This way we do not have to relabel them.
+
+def generate_shares(n, k, app_entropy, user_entropy=b'', id='', existing_shares={}, codexqr=True):
+    """Generate n shares total from existing shares."""
+    if n > 31:
+        return None
+    valid_shares, free_indexes, seedlen = validate_share_set(existing_shares, codexqr)
+    counter = 0
+    compatible_shares = []
+    generated_list = []
+    generated = []
+    valid_shares = []
+    
+    key_identifier = hash_160(master_key.eckey.get_public_key_bytes())
+    entropy_header = (seedlength.to_bytes(length=1, byteorder="big")
+                      + bytes("ms" + k + ident + "s", "utf") + key_identifier)
+    salt = entropy_header + bytes(CHARSET[n] + user_entropy, "utf")
+    # This is equivalent to hmac-sha512(b"Bitcoin seed", master_seed).
+    password = master_key.eckey.get_secret_bytes() + master_key.chaincode
+    # If scrypt absent visit OWASP Password Storage or use pbkdf2_hmac(
+    # 'sha512', password, salt, iterations=210_000 * 64, dklen=128)
+    derived_key = scrypt(
+        password, salt=salt, n=2 ** 20, r=8, p=1, maxmem=1025 ** 3, dklen=128)
+
+    
+    while len(valid_shares) < n:
+        generated.clear()
+        for _ in range(int(k)):
+            ms32_data = [-1] * 6
+            while ms32_data[5] not in free_indexes:
+                counter += 1
+                seed = randbytes(16)
+                bin_seed = convertbits(seed, 8, 1)
+                bin_data = bin_seed + bin_create_crc(7,convertbits(seed,8,1))
+                ms32_data = [ms32_t] + [31,31,31,31] + convertbits(bin_data, 1, 5)
+            free_indexes.remove(ms32_data[5])
+            if ms32_data[5] == 16:
+                ms32_secret = ms32_data
+            valid_shares.append(ms32_data)
+            generated.append(ms32_data)
+        for index in free_indexes:
+            ms32_derived = ms32_interpolate(generated[:int(t)], index)
+            if ms32_derived[5] == 16:
+                ms32_secret = ms32_derived
+            else:
+                bin_data = convertbits(ms32_derived[5:], 5, 1)
+                if bin_verify_crc(7,bin_data):
+                    compatible_shares += [ms32_derived]
+        last_counter = counter
+        counter += 1
+
+    valid_shares = generated_list + compatible_shares
+
+    
+
+    return new_shares
+    ms32_t = CHARSET.index(t)
+    n = 10
+    counter = 0
+    compatible_shares = []
+    generated_list = []
+    generated = []
+    compatible = []
+    passing = []
+
+    while len(valid_shares) < n:
+        free_indexes = list(range(32))
+        passing.clear()
+        generated.clear()
+        ms32_secret = None
+        for i in range(int(k)):
+            ms32_data = [-1] * 6
+            while ms32_data[5] not in free_indexes:
+                counter += 1
+                seed = randbytes(16)
+                bin_seed = convertbits(seed, 8, 1)
+                bin_data = bin_seed + bin_create_crc(7,convertbits(seed,8,1))
+                ms32_data = [ms32_t] + [31,31,31,31] + convertbits(bin_data, 1, 5)
+            free_indexes.remove(ms32_data[5])
+            if ms32_data[5] == 16:
+                ms32_secret = ms32_data
+            passing.append(ms32_data)
+            generated.append(ms32_data)
+        for index in free_indexes:
+            ms32_derived = ms32_interpolate(generated[:int(t)], index)
+            if ms32_derived[5] == 16:
+                ms32_secret = ms32_derived
+            else:
+                bin_data = convertbits(ms32_derived[5:], 5, 1)
+                if bin_verify_crc(7,bin_data):
+                    compatible_shares += [ms32_derived]
+        last_counter = counter
+        counter += 1
+
+    passing = generated_list + compatible_shares
+    print('')
+    if ms32_secret:
+        print('compatible secret found')
+        print(ms32_encode(ms32_secret)[5:32])
+    else:
+        print('non-compatible derived secret')
+        print(ms32_encode(ms32_interpolate(passing[:int(t)]), 16))
+
+    generated += [ms32_encode(codex)[5:32] for codex in generated_list]
+    compatible += [ms32_encode(codex)[5:32] for codex in compatible_shares]
+   
 
 
 def validate_codex32_string_list(string_list, k_must_equal_list_length=True):
@@ -281,23 +701,10 @@ def validate_codex32_string_list(string_list, k_must_equal_list_length=True):
     :param k_must_equal_list_length: Flag for k must match list length.
     :return: List of decoded data if valid, else None.
     """
-    list_len = len(string_list)
-    headers = set()
-    share_indices = set()
-    lengths = set()
-
-    for codex32_string in string_list:
-        headers.add(tuple(decode("ms", codex32_string)[:2]))
-        share_indices.add(decode("ms", codex32_string)[2])
-        lengths.add(len(codex32_string))
-        if len(headers) > 1 or len(lengths) > 1:
-            return None
-
-    if (k_must_equal_list_length and int(headers.pop()[0]) != list_len
-            or len(share_indices) < list_len):
-        return None
-
-    return [ms32_decode(codex32_string)[4] for codex32_string in string_list]
+    ret = []
+    for string in string_list:
+        ret += [ms32_decode(string)[1]]
+    return ret
 
 
 def recover_master_seed(share_list):
@@ -324,6 +731,124 @@ def derive_share(string_list, fresh_share_index="s"):
     ms32_share_index = CHARSET.find(fresh_share_index.lower())
     if ms32_share_index < 0:
         return None
+    l = validate_codex32_string_list(string_list)
+    return ms32_interpolate(l, ms32_share_index)
+
+
+def relabel_codex32_strings(hrp, header, string_list, fp=b''):
+    """Update headers on codex32 strings and recreate the checksums."""
+    t = header[0]
+    id = header[1:4]
+    new_strings = []
+    for codex32_string in string_list:
+        data = decode(hrp, codex32_string, fp)
+        new_strings.append(encode(hrp,))
+    return new_strings
+
+
+#def bin_encode_codexqr(header, entropy):
+    """Compute CompactCodexQR data given header and entropy values."""
+    bin_entropy = convertbits(entropy, 8, 1)
+    combined = bin_entropy + bin_create_codexqr_padding(header, bin_entropy)
+    return CodexQR.from_header(header).tiny_header + combined[5:5 + len(bin_entropy)]
+
+
+def bin_decode_codexqr(data):
+    bin_header = data[:29]
+    t = '0' if data[:4] == [0] * 4 else str(convertbits(data[:4], 4, 1)[0] + 1)
+    header = t + [CHARSET.find(x) for x in convertbits(bin_header[4:], 1, 5)]
+    if bin_verify_codexqr_padding(header, data[24:]):
+        return (header, convertbits(data[29:], 1, 8, False))
+    return (None, None)
+
+
+def shuffle_indexes(index_seed, indices=CHARSET.replace("s", "")):
+    """Shuffle indexes deterministically with index_seed."""
+    counter = 0  # Counter to track current position in the keystream.
+    digest = b""  # Storage for HMAC-SHA256 digest
+    value = b""  # Storage for the assigned random value
+    assigned_values = {}  # Dictionary to store characters and values.
+    for char in indices:
+        # Generates a new random value when there's a collision.
+        while value in assigned_values.values() or not value:
+            if not counter % 32:  # Generate new digest every 32 bytes.
+                digest = hmac.digest(
+                    index_seed, (counter // 32).to_bytes(8, "big"), sha256)
+            value = digest[counter % 32]  # rand byte
+            counter += 1
+        assigned_values[char] = value
+    return sorted(assigned_values.keys(), key=lambda x: assigned_values[x])
+
+
+def shuffle_indexes(index_seed, indices=CHARSET.replace("s", "")):
+    """Shuffle indexes deterministically with index_seed."""
+    counter = 0  # Counter to track current position in the keystream.
+    digest = b""  # Storage for HMAC-SHA256 digest
+    value = b""  # Storage for the assigned random value
+    assigned_values = {}  # Dictionary to store characters and values.
+    for char in indices:
+        # Generates a new random value when there's a collision.
+        while value in assigned_values.values() or not value:
+            if not counter % 32:  # Generate new digest every 32 bytes.
+                digest = hmac.digest(
+                    index_seed, (counter // 32).to_bytes(8, "big"), sha256)
+            value = digest[counter % 32]  # rand byte
+            counter += 1
+        assigned_values[char] = value
+    return sorted(assigned_values.keys(), key=lambda x: assigned_values[x])
+
+
+def _validate_codex32_string_list(string_list, k_must_equal_list_length=True):
+    """
+    Validate uniform threshold, identifier, length, and unique indices.
+
+    :param string_list: List of codex32 strings to be validated.
+    :param k_must_equal_list_length: Flag for k must match list length.
+    :return: List of decoded data if valid, else None.
+    """
+    list_len = len(string_list)
+    headers = set()
+    share_indices = set()
+    lengths = set()
+
+    for codex32_string in string_list:
+        headers.add(tuple(decode("ms", codex32_string)[:2]))
+        share_indices.add(decode("ms", codex32_string)[2])
+        lengths.add(len(codex32_string))
+        if len(headers) > 1 or len(lengths) > 1:
+            return None
+
+    if (k_must_equal_list_length and int(headers.pop()[0]) != list_len
+            or len(share_indices) < list_len):
+        return None
+
+    return [ms32_decode(codex32_string)[1] for codex32_string in string_list]
+
+
+def recover_master_seed(share_list):
+    """
+    Derive master seed from a list of threshold valid codex32 shares.
+
+    :param share_list: List of codex32 shares to recover master seed.
+    :return: The master seed as bytes, or None if share set is invalid.
+    """
+    ms32_share_list = validate_codex32_string_list(share_list)
+    if not ms32_share_list:
+        return None
+    return bytes(convertbits(ms32_recover(ms32_share_list)[6:], 5, 8, False))
+
+
+def _derive_share(string_list, fresh_share_index="s"):
+    """
+    Derive an additional share from a valid codex32 string set.
+
+    :param string_list: List of codex32 strings to derive from.
+    :param fresh_share_index: New index character to derive share at.
+    :return: Derived codex32 share or None if derivation fails.
+    """
+    ms32_share_index = CHARSET.find(fresh_share_index.lower())
+    if ms32_share_index < 0:
+        return None
     return ms32_encode("ms", ms32_interpolate(
         validate_codex32_string_list(string_list), ms32_share_index))
 
@@ -339,7 +864,7 @@ def ms32_fingerprint(seed):
         seed, xtype="standard").calc_fingerprint_of_this_node(), 8, 5)[:4]
 
 
-def relabel_codex32_strings(hrp, string_list, new_k="", new_id=""):
+def relabel_codex32_strings(hrp, header, string_list):
     """
     Change the k and ident on a list of codex32 strings.
 
@@ -351,40 +876,14 @@ def relabel_codex32_strings(hrp, string_list, new_k="", new_id=""):
     """
     new_strings = []
     for codex32_string in string_list:
-        k, ident, share_index, decoded = decode(hrp, codex32_string)
+        decoded = decode(hrp, codex32_string)
         new_k = k if not new_k else new_k
         new_id = ident if not new_id else new_id
         new_strings.append(encode(hrp, new_k, new_id, share_index, decoded))
     return new_strings
 
-
-def shuffle_indices(index_seed, indices):
-    """
-    Shuffle indices deterministically using provided key with ChaCha20.
-
-    :param index_seed: The ChaCha20 key for deterministic shuffling.
-    :param indices: Characters to be shuffled as a string.
-    :return: List of shuffled characters sorted by assigned values.
-    """
-    algorithm = algorithms.ChaCha20(index_seed, bytes(16))
-    keystream = Cipher(algorithm, mode=None).encryptor()
-    counter = 0  # Counter to track current position in the keystream.
-    value = b""  # Storage for the assigned random byte.
-    block = b""  # Holds the latest keystream block.
-    assigned_values = {}  # Dictionary to store chars and their values.
-    for char in indices:
-        # Ensure new random value is generated if there is a collision.
-        while value in assigned_values.values() or not value:
-            if not counter % 64:  # Get new 64-byte block per 64 count.
-                block = keystream.update(bytes(64))  # ChaCha20 block.
-            value = block[counter % 64:counter % 64 + 1]  # Rand byte.
-            counter += 1
-        assigned_values[char] = value
-    return sorted(assigned_values.keys(), key=lambda x: assigned_values[x])
-
-
 def generate_shares(master_key="", user_entropy="", n=31, k="2", ident="NOID",
-                    seed_length=16, existing_codex32_strings=None):
+                    seedlength=16, existing_codex32_strings=[]):
     """
     Generate new codex32 shares from provided or derived entropy.
 
@@ -393,7 +892,7 @@ def generate_shares(master_key="", user_entropy="", n=31, k="2", ident="NOID",
     :param n: Total number of codex32 shares to generate (default: 31).
     :param k: Threshold parameter (default: 2).
     :param ident: Identifier (4 bech32 characters) or 'NOID' (default).
-    :param seed_length: Length of seed (16 to 64 bytes, default: 16).
+    :param seedlength: Length of seed (16 to 64 bytes, default: 16).
     :param existing_codex32_strings: List of existing codex32 strings.
     :return: Tuple: master_seed (bytes), list of new codex32 shares.
     """
@@ -411,7 +910,7 @@ def generate_shares(master_key="", user_entropy="", n=31, k="2", ident="NOID",
         available_indices.remove(share_index)
         if share_index == "s":
             master_seed = payload
-        seed_length = len(payload)
+        seedlength = len(payload)
 
     if num_strings == int(k) and not master_seed:
         master_seed = recover_master_seed(existing_codex32_strings)
@@ -422,14 +921,14 @@ def generate_shares(master_key="", user_entropy="", n=31, k="2", ident="NOID",
     else:
         return None
     key_identifier = hash_160(master_key.eckey.get_public_key_bytes())
-    entropy_header = (seed_length.to_bytes(length=1, byteorder="big")
+    entropy_header = (seedlength.to_bytes(length=1, byteorder="big")
                       + bytes("ms" + k + ident + "s", "utf") + key_identifier)
     salt = entropy_header + bytes(CHARSET[n] + user_entropy, "utf")
     # This is equivalent to hmac-sha512(b"Bitcoin seed", master_seed).
     password = master_key.eckey.get_secret_bytes() + master_key.chaincode
     # If scrypt absent visit OWASP Password Storage or use pbkdf2_hmac(
     # 'sha512', password, salt, iterations=210_000 * 64, dklen=128)
-    derived_key = hashlib.scrypt(
+    derived_key = scrypt(
         password, salt=salt, n=2 ** 20, r=8, p=1, maxmem=1025 ** 3, dklen=128)
     index_seed = hmac.digest(derived_key, b"Index seed", "sha512")[:32]
     available_indices.remove("s")
@@ -440,7 +939,7 @@ def generate_shares(master_key="", user_entropy="", n=31, k="2", ident="NOID",
     for i in range(num_strings, int(k)):
         share_index = available_indices.pop()
         info = bytes("Share payload with index: " + share_index, "utf")
-        payload = hmac.digest(derived_key, info, "sha512")[:seed_length]
+        payload = hmac.digest(derived_key, info, "sha512")[:seedlength]
         new_shares.append(encode("ms", k, tmp_id, share_index, payload))
     existing_codex32_strings.extend(new_shares)
     # Relabel existing codex32 strings, if necessary, with default ID.
@@ -456,36 +955,6 @@ def generate_shares(master_key="", user_entropy="", n=31, k="2", ident="NOID",
         new_shares.append(new_share)
 
     return master_seed, new_shares
-
-
-def ident_encryption_key(payload, k, unique_string=""):
-    """
-    Generate an MS32 encryption key from unique string and header data.
-
-    :param payload: Payload for getting the length component of header.
-    :param k: Threshold component of header for key generation.
-    :param unique_string: Optional unique string to avoid ident reuse.
-    :return: Four symbol MS32 Encryption key derived from parameters.
-    """
-    password = bytes(unique_string, "utf")
-    salt = len(payload).to_bytes(1, "big") + bytes("ms1" + k, "utf")
-    return convertbits(hashlib.scrypt(
-        password, salt=salt, n=2 ** 20, r=8, p=1, maxmem=1025 ** 3, dklen=3),
-        8, 5, pad=False)
-
-
-def encrypt_fingerprint(master_seed, k, unique_string=""):
-    """
-    Encrypt the MS32 fingerprint using a unique string and header data.
-
-    :param master_seed: The master seed used for fingerprint.
-    :param k: The threshold parameter as a string.
-    :param unique_string: Optional unique string encryption password.
-    :return: Encrypted fingerprint as a bech32 string.
-    """
-    enc_key = ident_encryption_key(master_seed, k, unique_string)
-    new_id = [x ^ y for x, y in zip(ms32_fingerprint(master_seed), enc_key)]
-    return "".join([CHARSET[d] for d in new_id])
 
 
 def regenerate_shares(existing_codex32_strings, unique_string,
@@ -537,8 +1006,6 @@ def shuffle_indexes(index_seed, indices=CHARSET.replace("s", "")):
 
     Provided only as a reference in case ChaCha20 is unavailable.
     """
-    from hashlib import sha256
-
     counter = 0  # Counter to track current position in the keystream.
     digest = b""  # Storage for HMAC-SHA256 digest
     value = b""  # Storage for the assigned random value
@@ -549,36 +1016,10 @@ def shuffle_indexes(index_seed, indices=CHARSET.replace("s", "")):
             if not counter % 32:  # Generate new digest every 32 bytes.
                 digest = hmac.digest(
                     index_seed, (counter // 32).to_bytes(8, "big"), sha256)
-            value = digest[counter % 32: counter % 32 + 1]  # rand byte
+            value = digest[counter % 32]  # rand byte
             counter += 1
         assigned_values[char] = value
     return sorted(assigned_values.keys(), key=lambda x: assigned_values[x])
-
-
-def kdf_share(passphrase, codex32_str):
-    """
-    Derive codex32 share from a passphrase and the codex32 header.
-
-    Args:
-        passphrase: a seed backup passphrase as a string
-        codex32_str: a valid codex32 string to derive kdf share with.
-
-    Returns:
-        the string encoded kdf_share
-
-    """
-    k, ident, _, payload = decode("ms", codex32_str)
-    password = bytes(passphrase, "utf")
-    salt = len(payload).to_bytes(1, "big") + bytes(codex32_str[:8], "utf")
-    derived_key = hashlib.scrypt(password, salt=salt, n=2 ** 20, r=8, p=1,
-                                 maxmem=1025 ** 3, dklen=128)
-    passphrase_index_seed = hmac.digest(
-        derived_key, b"Passphrase share index seed", "sha512")[:32]
-    share_index = shuffle_indices(
-        passphrase_index_seed, list(CHARSET.replace("s", ""))).pop()
-    payload = hmac.digest(derived_key, b"Passphrase share payload with index "
-                          + bytes(share_index, "utf"), "sha512")[:len(payload)]
-    return encode("ms", k, ident, share_index, payload)
 
 
 def numberToBase(n, b, fixed_length=0):
@@ -596,7 +1037,7 @@ def encode_compact_qr(codex32_str):
     from qrcode.image.styles.moduledrawers.pil import CircleModuleDrawer
     big_num = 0
     b45_encoded = ''
-    hrp, k, ident, share_index, data = ms32_decode(codex32_str)
+    hrp, k, ident, share_index, data = Codex32.parse_header(codex32_str)
     if hrp != 'ms':
         return None
     if share_index == 's':
@@ -634,3 +1075,228 @@ def decode_compact_qr(hrp, last_k, ident, string):
     if ident != '????':
         return ms32_encode(hrp, [CHARSET.find(x.lower()) for x in k + ident] + bech32)
     return hrp + "1" + k + ident + "".join([CHARSET[d] for d in bech32]) + '?' * 13
+
+
+def bin_decode(codex):
+    """Validate a codex32/codexQR share, and determine HRP and data."""
+    hrp, header, ms32_data = ms32_decode(codex)
+    if len(ms32_data) != 32:
+        return (None, None, None)
+    bin_data = convertbits(ms32_data, 5, 1)
+    if bin_verify_index_and_padding(header, bin_data):
+        return (hrp, header, bin_data[30:-2])
+    return (None, None, None)
+
+
+def bin_decode(codex):
+    """Validate a codex32 string, and determine CodexQR data."""
+    hrp, header, ms32_data = ms32_decode(codex) # must be valid codex32
+    if header[0] == '9': # t=9 unsupported
+        return None
+    data = convertbits(ms32_data, 5, 1)
+    # FIXME: How the 's' share is currently CRC'd requires fingerprint ID.
+
+    if bin_verify_crc(hrp, header, data): # string is compatible with CodexQR
+        if len(ms32_data) == 32: # 21x21, 16 bytes entropy
+            return CodexQR.from_header(header).tiny_header + data[30:-2]
+    return None
+
+
+def qr_decode(qr_data):
+    t = int(convertbits(qr_data[:3], 1, 3))
+    ms32_data = CHARSET.find(str(t))
+    if len(qr_data) == 3 + 10 + 128:
+        entropy_len = 128
+        id_len = 10
+    ms32_data += qr_data[3:10] + [-1, -1]
+    index = [16] if not t else [qr_data[-128:]]
+    entropy_len = len(qr_data) - 15
+    entropy_len = len(qr_data) - 15
+
+
+def bin_encode(hrp, data):
+    """Compute a codex32 secret given HRP and binary data values."""
+    ms32_data = convertbits(data + bin_create_crc(hrp, data), 1, 5)
+    combined = ms32_data + ms32_create_checksum(ms32_data)
+    return hrp + '1' + ''.join([CHARSET[d] for d in combined])
+
+
+def ident_encryption_key(payload, k, unique_string=""):
+    """
+    Generate an MS32 encryption key from unique string and header data.
+
+    :param payload: Payload for getting the length component of header.
+    :param k: Threshold component of header for key generation.
+    :param unique_string: Optional unique string to avoid ident reuse.
+    :return: Four symbol MS32 Encryption key derived from parameters.
+    """
+    password = bytes(unique_string, "utf")
+    salt = len(payload).to_bytes(1, "big") + bytes("ms1" + k, "utf")
+    return convertbits(scrypt(
+        password, salt=salt, n=2 ** 20, r=8, p=1, maxmem=1025 ** 3, dklen=3),
+        8, 5, pad=False)
+
+
+def encrypt_fingerprint(master_seed, k, unique_string=""):
+    """
+    Encrypt the MS32 fingerprint using a unique string and header data.
+
+    :param master_seed: The master seed used for fingerprint.
+    :param k: The threshold parameter as a string.
+    :param unique_string: Optional unique string encryption password.
+    :return: Encrypted fingerprint as a bech32 string.
+    """
+    enc_key = ident_encryption_key(master_seed, k, unique_string)
+    new_id = [x ^ y for x, y in zip(ms32_fingerprint(master_seed), enc_key)]
+    return "".join([CHARSET[d] for d in new_id])
+
+
+
+# KDF SHARES:
+# There is some info in the CompactQR to use as salt: namely the
+# threshold or id.
+
+import random
+from random import randrange
+from random import randbytes
+
+def add_errors(data, qty, burst=False, rand=True):
+    #print(data)
+    corrupt_data = data.copy()
+    error_symbol_locs = random.sample(range(0, len(data)//5), qty)
+    for loc in error_symbol_locs:
+        #print(loc)
+        if burst:
+            for i in range(5):
+                if not rand or randrange(2):
+                    corrupt_data[loc * 5 + i] ^= 1
+        else:
+            corrupt_data[loc * 5 + randrange(5)] ^= 1
+    #print(corrupt_data)
+    return corrupt_data
+# CRC-7 test results.
+#(x^7 + x^3 + 1)
+# 2 errors: 0.0902%
+# 3 errors: 
+# 4 errors: 
+# 5 errors: 0.7759%
+# x^7+x^6+x^3+x+1
+# 2 errors: 0.0927
+# 5 errors: 0.7819
+# x^7+x^6+x^5+x^3+x^2+x+1
+# 2 errors: 0.0917
+# 5 errors: 0.7719
+
+# x^7+x^6+x^5+x^2+1  TESTED
+# 2 errors: 0.0867
+# 3 errors: 0.8013
+# 4 errors: 0.7815
+# 5 errors: 0.7823
+# 6 errors: 0.7723
+# 9 errors: 0.7893
+# 10 errors: 0.7956
+# 1 5-bit burst error: 0.0
+# 2 5-bit burst error: 0.0
+# 3 5-bit burst error: 0.6324
+# 4 5-bit burst error: 0.7747
+# 5 5-bit burst error: 0.8161
+# 9 5-bit burst error: 0.7936
+# 10 5-bit burst error: 0.7797
+# 1 random 5-bit burst error: 3.1509
+# 2 random 5-bit burst error: 0.7799
+# 3 random 5-bit burst error: 0.7983
+# 4 random 5-bit burst error: 0.7704
+# 5 random 5-bit burst error: 0.777
+# 9 random 5-bit burst error: 0.7816
+
+# x^7+x^5+x^4+x^2+x+1 TESTED
+# 2 errors: 0.9355
+# 3 errors: 0.0
+# 4 errors: 1.5756
+# 5 errors: 0.0
+# 6 errors: 1.5598
+# 9 errors: 0.0
+# 10 errors: 1.5768
+# 1-3 5-bit burst error: 0.0
+# 4 5-bit burst error: 1.6009
+# 5 5-bit burst error: 0.0
+# 9 5-bit burst error: 0.0
+# 10 5-bit burst error: 1.5574
+# 1 random 5-bit burst error: 3.1328
+# 2 random 5-bit burst error: 0.7911
+# 3 random 5-bit burst error: 0.7752
+# 4 random 5-bit burst error: 0.7736
+# 5 random 5-bit burst error: 0.7809
+# 9 random 5-bit burst error: 0.7925
+
+# TO generate a backup set: First get entropy from KDF for each share.
+# initialize a counter at 0, HMAC the share's entropy with the counter
+# continue until all k - 1 shares have unique_indexes.
+
+# If using a seed backup passphrase: KDF the passphrase w/ tiny header as salt 
+# use that as the entropy for a share. The KDF share's counter will increment until the index is not 's'.
+# this guarantees the KDF share always knows its index.
+
+# For the 21x21 CodexQR, encode 16-bytes of , 5-bits of codex32 checksum, and 2.3 bits of 
+
+
+
+# The secret does not need CRC-7 padding and should not have it.
+# When we ask for n shares, they must be non-'s' indexes.
+# When we encode Compact CodexQR now we should encode it index first.
+# the first 128 bits, are enough to determine the padding and last
+# data character precisely. This will reduce hunting without harming
+# correction capacity. We've essentially gained 5 bits of ECC on the
+# shares, so now 9.3 bits performs like 14.3 would have.
+#
+"""print('')
+print('compatible shares found:')
+print(len(passing))
+print('')
+print('compatible shares generated:')
+print(int(t))
+print('')
+print('compatible generated shares')
+print(generated)
+print('')
+print('compatible derived shares')
+print(compatible)
+print('')
+print('counts required to generate')
+print(counter)"""
+
+    
+# Removing the index from the CRC-2 would avoid having to recalculate it when an index is derived
+# 16 bytes > index. CRC-2 after index is known
+
+# If I am using 2 codex32 characters as bonus, the crc-2 should not include the ID, just fp.
+# If I am using no codex32 characters as bonus, include the header so that I can instantly
+# Detect mismatched shares.
+
+failures = 0
+counts = 0
+trials = 10000
+#for i in range(trials):
+#    seed = randbytes(16)
+#    fp = get_fp(seed) # b'deadbeef' #
+
+    #data, seed, counter = create_index_checksum(fp, seed, CHARSET[:11]+CHARSET[19:])
+#    counts += counter
+#    ms32_data = [10] + ms32_expand(fp)[:4] + data
+#    ms32_interpolate([ms32_data])
+#    if not ms32_verify_index_checksum(fp, ms32_data):
+#        failures += 1
+
+#print(failures/trials)
+#print(counts/trials)
+
+
+#print(encode('ms', k, id, index, master_seed, fp))
+#print('key identifier')
+#key_id = convertbits(_ripemd160(sha256(BIP32.from_seed(master_seed).pubkey).digest()), 8, 5)
+#print(key_id)
+
+#shuffle_key = fp + bytes(hrp + k + id + index, 'utf')
+#print(shuffle_key)
+#index_list = shuffle_indexes(shuffle_key)
+#print(index_list)

@@ -1,3 +1,6 @@
-
-bails-wallet/__pycache__/codex32.cpython-311.pyc
+.venv/*
+*/__pycache__/*.pyc
+bails-wallet/__pycache__/codex32.cpython-312.pyc
+bails-wallet/__pycache__/segwit_addr.cpython-311.pyc
+*.pyc
 /bails-wallet/__pycache__
